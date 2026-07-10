@@ -99,17 +99,5 @@ Open **`http://localhost:5173/`** in your browser to view the application.
 You can run the backend logic unit test suite (which validates debt simplification balances, overcharge checks, and outlier math against mock data):
 ```bash
 node backend/tests/test_logic.js
-```
 
----
 
-## 💡 Viva Voce (Interview) Cheat Sheet
-
-Be prepared to answer these common questions during your project presentation:
-
-1. **Why is your cash flow simplification algorithm greedy?**
-   - It matches the largest debtor with the largest creditor first. While finding the *absolute absolute* minimum cash transactions is an NP-complete problem (reducible to Subset Sum), this greedy heuristic guarantees a solution in $\le N-1$ transactions and runs efficiently in $O(N \log N)$ time, which is the standard model used in commercial apps.
-2. **How does the system ensure data integrity when writing expense splits?**
-   - The backend runs multi-statement queries inside a database **Transaction** (`BEGIN TRANSACTION`, `COMMIT`, `ROLLBACK`). If adding an expense split fails midway (e.g., node network drop or database lock), the whole transaction rolls back, preventing partial or orphan splits.
-3. **What is the mathematical concept behind your outlier checks?**
-   - It calculates the **Standard Deviation** ($\sigma$) of all expense amounts in a group. If a new expense is $> 1.2 \sigma$ above the mean (and at least double the average size), it is statistically flagged as an outlier, prompting users to double-check their inputs for typos.
