@@ -28,7 +28,9 @@ import {
   recordSettlement,
   fetchActivities,
   createRecurring,
-  fetchRecurring
+  fetchRecurring,
+  fetchSettlementsHistory,
+  deleteSettlement
 } from './api';
 
 // Donut Chart Component
@@ -236,7 +238,12 @@ export default function App() {
   const [insights, setInsights] = useState({ alerts: [], categoryBreakdown: [] });
   const [activities, setActivities] = useState([]);
   const [recurring, setRecurring] = useState([]);
+  const [settlementHistory, setSettlementHistory] = useState([]);
   const [activeTab, setActiveTab] = useState('expenses');
+
+  // Search & Filters for Expenses
+  const [searchQuery, setSearchQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('All');
 
   // Modals Toggle
   const [isCreateGroupOpen, setIsCreateGroupOpen] = useState(false);
@@ -257,6 +264,7 @@ export default function App() {
   const [expDate, setExpDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [splitChecked, setSplitChecked] = useState({});
   const [splitExact, setSplitExact] = useState({});
+  const [splitPercentage, setSplitPercentage] = useState({});
 
   // Add Recurring Template Form Fields
   const [recDesc, setRecDesc] = useState('');
@@ -305,6 +313,9 @@ export default function App() {
 
       const recurringData = await fetchRecurring(groupId);
       setRecurring(recurringData);
+
+      const historyData = await fetchSettlementsHistory(groupId);
+      setSettlementHistory(historyData);
 
       setError(null);
     } catch (err) {
@@ -373,12 +384,15 @@ export default function App() {
     if (isAddExpenseOpen && groupDetails) {
       const initialChecked = {};
       const initialExact = {};
+      const initialPercent = {};
       groupDetails.members.forEach(m => {
         initialChecked[m.id] = true;
         initialExact[m.id] = '';
+        initialPercent[m.id] = '';
       });
       setSplitChecked(initialChecked);
       setSplitExact(initialExact);
+      setSplitPercentage(initialPercent);
       setExpPaidBy(groupDetails.members[0]?.id || '');
       setExpDesc('');
       setExpAmount('');
@@ -406,6 +420,9 @@ export default function App() {
   const exactSplitSum = Object.values(splitExact).reduce((sum, val) => sum + (parseFloat(val) || 0), 0);
   const amountFloat = parseFloat(expAmount) || 0;
   const isExactSplitValid = Math.abs(exactSplitSum - amountFloat) < 0.02;
+
+  const percentageSplitSum = Object.values(splitPercentage).reduce((sum, val) => sum + (parseFloat(val) || 0), 0);
+  const isPercentageSplitValid = Math.abs(percentageSplitSum - 100) < 0.01;
 
   // Submit Add Expense
   const handleAddExpenseSubmit = async (e) => {
@@ -438,6 +455,27 @@ export default function App() {
           amount: roundedShare
         });
       });
+    } else if (expSplitType === 'percentage') {
+      if (!isPercentageSplitValid) {
+        alert(`The sum of individual percentages (${percentageSplitSum.toFixed(1)}%) must equal exactly 100%.`);
+        return;
+      }
+      groupDetails.members.forEach((m) => {
+        const pct = parseFloat(splitPercentage[m.id]) || 0;
+        if (pct > 0) {
+          let roundedShare = Math.round((amountFloat * (pct / 100)) * 100) / 100;
+          calculatedSplits.push({
+            memberId: m.id,
+            amount: roundedShare
+          });
+        }
+      });
+      // Adjust rounding difference
+      const splitSum = calculatedSplits.reduce((sum, s) => sum + s.amount, 0);
+      const diff = amountFloat - splitSum;
+      if (Math.abs(diff) > 0.001 && calculatedSplits.length > 0) {
+        calculatedSplits[calculatedSplits.length - 1].amount = Math.round((calculatedSplits[calculatedSplits.length - 1].amount + diff) * 100) / 100;
+      }
     } else {
       if (!isExactSplitValid) {
         alert(`The sum of individual shares (₹${exactSplitSum.toFixed(2)}) must equal the total amount (₹${amountFloat.toFixed(2)}).`);
@@ -514,6 +552,46 @@ export default function App() {
     }
   };
 
+  const handleQuickLogRecurring = async (template) => {
+    if (!confirm(`Do you want to log a new expense of ₹${template.amount.toFixed(2)} for "${template.description}"? It will be split equally among all group members.`)) {
+      return;
+    }
+
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const memberCount = groupDetails.members.length;
+      if (memberCount === 0) return;
+
+      const share = template.amount / memberCount;
+      let remaining = template.amount;
+      const calculatedSplits = groupDetails.members.map((m, idx) => {
+        let roundedShare = Math.round(share * 100) / 100;
+        if (idx === memberCount - 1) {
+          roundedShare = Math.round(remaining * 100) / 100;
+        }
+        remaining -= roundedShare;
+        return {
+          memberId: m.id,
+          amount: roundedShare
+        };
+      });
+
+      await addExpense(groupDetails.id, {
+        paidByMemberId: template.paid_by_member_id,
+        amount: template.amount,
+        description: `${template.description} (Auto-Logged)`,
+        category: template.category,
+        splitType: 'equal',
+        date: today,
+        splits: calculatedSplits
+      });
+
+      loadGroupDetails(groupDetails.id);
+    } catch (err) {
+      alert('Failed to quick-log recurring bill: ' + err.message);
+    }
+  };
+
   const handleDeleteExpenseClick = async (expenseId) => {
     if (!confirm('Are you sure you want to delete this expense?')) return;
     try {
@@ -521,6 +599,16 @@ export default function App() {
       loadGroupDetails(groupDetails.id);
     } catch (err) {
       alert('Failed to delete expense');
+    }
+  };
+
+  const handleDeleteSettlementClick = async (settlementId) => {
+    if (!confirm('Are you sure you want to undo/delete this settlement payment? This will revert the balances.')) return;
+    try {
+      await deleteSettlement(settlementId);
+      loadGroupDetails(groupDetails.id);
+    } catch (err) {
+      alert('Failed to delete settlement: ' + err.message);
     }
   };
 
@@ -697,7 +785,36 @@ export default function App() {
                 
                 {/* Left side: Expenses list */}
                 <div>
-                  <h3 style={{ fontSize: '1.1rem', marginBottom: '1rem', fontWeight: 600 }}>Group Expenses</h3>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: 0 }}>Group Expenses</h3>
+                    
+                    {groupDetails.expenses.length > 0 && (
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        <input 
+                          type="text" 
+                          className="form-input" 
+                          style={{ width: '180px', padding: '0.35rem 0.65rem', fontSize: '0.8rem' }}
+                          placeholder="Search expenses..."
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                        />
+                        <select 
+                          className="form-select"
+                          style={{ width: '120px', padding: '0.35rem 0.65rem', fontSize: '0.8rem' }}
+                          value={categoryFilter}
+                          onChange={(e) => setCategoryFilter(e.target.value)}
+                        >
+                          <option value="All">All Categories</option>
+                          <option value="Food">Food</option>
+                          <option value="Travel">Travel</option>
+                          <option value="Utilities">Utilities</option>
+                          <option value="Entertainment">Entertainment</option>
+                          <option value="Other">Other</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
                   {groupDetails.expenses.length === 0 ? (
                     <div className="glass" style={{ borderRadius: 'var(--radius-lg)', padding: '4rem 2rem', textAlign: 'center' }}>
                       <Receipt size={48} color="var(--text-muted)" style={{ marginBottom: '1rem' }} />
@@ -706,60 +823,77 @@ export default function App() {
                         Add First Expense
                       </button>
                     </div>
-                  ) : (
-                    <div>
-                      {groupDetails.expenses.map((expense) => {
-                        const shareCount = groupDetails.splits.filter(s => s.expense_id === expense.id).length;
-                        return (
-                          <div key={expense.id} className="list-item" style={{ padding: '1.1rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                              <div style={{ 
-                                width: '38px', 
-                                height: '38px', 
-                                borderRadius: '8px', 
-                                background: 'rgba(255,255,255,0.03)', 
-                                border: '1px solid var(--border-color)', 
-                                display: 'flex', 
-                                alignItems: 'center', 
-                                justifyContent: 'center',
-                                color: 'var(--primary)',
-                                fontSize: '0.8rem',
-                                fontWeight: 700
-                              }}>
-                                {expense.category[0].toUpperCase()}
-                              </div>
-                              <div>
-                                <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>{expense.description}</div>
-                                <div style={{ display: 'flex', gap: '0.5rem', fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem', flexWrap: 'wrap' }}>
-                                  <span>Paid by <strong style={{ color: 'var(--text-primary)' }}>{expense.paid_by_name}</strong></span>
-                                  <span>•</span>
-                                  <span>Split: {shareCount} ppl</span>
-                                  <span>•</span>
-                                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.15rem' }}>
-                                    <Calendar size={10} />
-                                    {expense.date}
-                                  </span>
+                  ) : (() => {
+                    const filteredExpenses = groupDetails.expenses.filter(expense => {
+                      const matchesSearch = expense.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                                            expense.paid_by_name.toLowerCase().includes(searchQuery.toLowerCase());
+                      const matchesCategory = categoryFilter === 'All' || expense.category === categoryFilter;
+                      return matchesSearch && matchesCategory;
+                    });
+                    
+                    if (filteredExpenses.length === 0) {
+                      return (
+                        <div className="glass" style={{ borderRadius: 'var(--radius-lg)', padding: '3rem 1.5rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                          <p style={{ fontSize: '0.9rem' }}>No expenses match your filter criteria.</p>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div>
+                        {filteredExpenses.map((expense) => {
+                          const shareCount = groupDetails.splits.filter(s => s.expense_id === expense.id).length;
+                          return (
+                            <div key={expense.id} className="list-item" style={{ padding: '1.1rem' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                                <div style={{ 
+                                  width: '38px', 
+                                  height: '38px', 
+                                  borderRadius: '8px', 
+                                  background: 'rgba(255,255,255,0.03)', 
+                                  border: '1px solid var(--border-color)', 
+                                  display: 'flex', 
+                                  alignItems: 'center', 
+                                  justifyContent: 'center',
+                                  color: 'var(--primary)',
+                                  fontSize: '0.8rem',
+                                  fontWeight: 700
+                                }}>
+                                  {expense.category[0].toUpperCase()}
+                                </div>
+                                <div>
+                                  <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>{expense.description}</div>
+                                  <div style={{ display: 'flex', gap: '0.5rem', fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem', flexWrap: 'wrap' }}>
+                                    <span>Paid by <strong style={{ color: 'var(--text-primary)' }}>{expense.paid_by_name}</strong></span>
+                                    <span>•</span>
+                                    <span>Split: {shareCount} ppl</span>
+                                    <span>•</span>
+                                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.15rem' }}>
+                                      <Calendar size={10} />
+                                      {expense.date}
+                                    </span>
+                                  </div>
                                 </div>
                               </div>
+                              
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                                <span style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                                  ₹{expense.amount.toFixed(2)}
+                                </span>
+                                <button 
+                                  className="btn btn-secondary btn-icon" 
+                                  onClick={() => handleDeleteExpenseClick(expense.id)}
+                                  style={{ color: 'var(--danger)', border: 'none', background: 'transparent', width: '28px', height: '28px' }}
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
                             </div>
-                            
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                              <span style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                                ₹{expense.amount.toFixed(2)}
-                              </span>
-                              <button 
-                                className="btn btn-secondary btn-icon" 
-                                onClick={() => handleDeleteExpenseClick(expense.id)}
-                                style={{ color: 'var(--danger)', border: 'none', background: 'transparent', width: '28px', height: '28px' }}
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Right side: Recurring bill templates */}
@@ -784,17 +918,27 @@ export default function App() {
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                       {recurring.map(rec => (
-                        <div key={rec.id} style={{ padding: '0.75rem 1rem', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', fontSize: '0.85rem' }}>
-                          <div style={{ display: 'flex', justifyAlignment: 'space-between', justifyContent: 'space-between', fontWeight: 600 }}>
-                            <span>{rec.description}</span>
-                            <span style={{ color: 'var(--primary)' }}>₹{rec.amount.toFixed(2)}</span>
+                        <div key={rec.id} style={{ padding: '0.85rem 1rem', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', fontSize: '0.85rem' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                            <span style={{ fontWeight: 600 }}>{rec.description}</span>
+                            <span style={{ color: 'var(--primary)', fontWeight: 700 }}>₹{rec.amount.toFixed(2)}</span>
                           </div>
-                          <div style={{ display: 'flex', gap: '0.5rem', color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.25rem' }}>
-                            <span>{rec.frequency}</span>
-                            <span>•</span>
-                            <span>Payer: {rec.paid_by_name}</span>
-                            <span>•</span>
-                            <span>Due: {rec.next_due_date}</span>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                            <div style={{ display: 'flex', gap: '0.5rem', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                              <span>{rec.frequency}</span>
+                              <span>•</span>
+                              <span>Payer: {rec.paid_by_name}</span>
+                              <span>•</span>
+                              <span>Due: {rec.next_due_date}</span>
+                            </div>
+                            <button 
+                              className="btn btn-secondary" 
+                              style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '0.2rem' }}
+                              onClick={() => handleQuickLogRecurring(rec)}
+                            >
+                              <Plus size={10} />
+                              Quick Log
+                            </button>
                           </div>
                         </div>
                       ))}
@@ -887,6 +1031,48 @@ export default function App() {
                               >
                                 <CheckCircle2 size={12} />
                                 Settled
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Recorded Settlement History (Past Payments) */}
+                  <div className="glass card">
+                    <h3 className="card-title" style={{ fontSize: '1.15rem', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <History size={16} color="var(--primary)" />
+                      Past Settlements History
+                    </h3>
+                    {settlementHistory.length === 0 ? (
+                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center', padding: '1.5rem 0' }}>
+                        No past settlements recorded.
+                      </p>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                        {settlementHistory.map((sh) => (
+                          <div key={sh.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.65rem 0.85rem', background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', fontSize: '0.85rem' }}>
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                                <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{sh.from_name}</span>
+                                <ArrowRight size={10} style={{ color: 'var(--text-muted)' }} />
+                                <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{sh.to_name}</span>
+                              </div>
+                              <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                                {sh.date}
+                              </div>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                              <span style={{ fontWeight: 700, color: 'var(--success)' }}>
+                                ₹{sh.amount.toFixed(2)}
+                              </span>
+                              <button 
+                                className="btn btn-secondary btn-icon"
+                                style={{ border: 'none', background: 'transparent', padding: 0, width: '24px', height: '24px', color: 'var(--danger)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                                onClick={() => handleDeleteSettlementClick(sh.id)}
+                              >
+                                <Trash2 size={12} />
                               </button>
                             </div>
                           </div>
@@ -1185,6 +1371,7 @@ export default function App() {
                     onChange={(e) => setExpSplitType(e.target.value)}
                   >
                     <option value="equal">Split Equally</option>
+                    <option value="percentage">Split by Percentage</option>
                     <option value="exact">Split Unequally (Exact)</option>
                   </select>
                 </div>
@@ -1193,7 +1380,7 @@ export default function App() {
               {/* SPLIT CONTROLS SECTION */}
               <div className="form-group" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', padding: '1rem', borderRadius: 'var(--radius-md)' }}>
                 <label className="form-label" style={{ marginBottom: '0.75rem', fontWeight: 600 }}>
-                  {expSplitType === 'equal' ? 'Split Among Whom?' : 'Enter Exact Shares (₹)'}
+                  {expSplitType === 'equal' ? 'Split Among Whom?' : expSplitType === 'percentage' ? 'Enter Percentages (%)' : 'Enter Exact Shares (₹)'}
                 </label>
                 
                 <div style={{ maxHeight: '160px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.6rem', paddingRight: '0.25rem' }}>
@@ -1210,6 +1397,21 @@ export default function App() {
                             checked={isChecked}
                             onChange={(e) => setSplitChecked({ ...splitChecked, [m.id]: e.target.checked })}
                           />
+                        ) : expSplitType === 'percentage' ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                            <input 
+                              type="number" 
+                              step="1"
+                              min="0"
+                              max="100"
+                              placeholder="0"
+                              className="form-input"
+                              style={{ width: '80px', padding: '0.35rem 0.5rem', textAlign: 'right', fontSize: '0.85rem' }}
+                              value={splitPercentage[m.id] ?? ''}
+                              onChange={(e) => setSplitPercentage({ ...splitPercentage, [m.id]: e.target.value })}
+                            />
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>%</span>
+                          </div>
                         ) : (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
                             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>₹</span>
@@ -1242,6 +1444,20 @@ export default function App() {
                     )}
                   </div>
                 )}
+
+                {expSplitType === 'percentage' && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)', fontSize: '0.825rem' }}>
+                    <span style={{ color: isPercentageSplitValid ? 'var(--success)' : 'var(--danger)', display: 'flex', alignItems: 'center', gap: '0.25rem', fontWeight: 600 }}>
+                      <Info size={12} />
+                      Total: {percentageSplitSum.toFixed(1)}% of 100%
+                    </span>
+                    {!isPercentageSplitValid && (
+                      <span style={{ color: 'var(--danger)' }}>
+                        Remaining: {(100 - percentageSplitSum).toFixed(1)}%
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem' }}>
@@ -1252,7 +1468,7 @@ export default function App() {
                   type="submit" 
                   className="btn btn-primary" 
                   style={{ flex: 1 }}
-                  disabled={expSplitType === 'exact' && !isExactSplitValid}
+                  disabled={(expSplitType === 'exact' && !isExactSplitValid) || (expSplitType === 'percentage' && !isPercentageSplitValid)}
                 >
                   Save Expense
                 </button>

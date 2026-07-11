@@ -366,6 +366,61 @@ app.post('/api/groups/:id/settlements', async (req, res) => {
   }
 });
 
+// 8b. Get Recorded Settlements History
+app.get('/api/groups/:id/settlements/history', async (req, res) => {
+  const groupId = req.params.id;
+  const db = await getDb();
+  
+  try {
+    const history = await db.all(`
+      SELECT s.*, f.name AS from_name, t.name AS to_name
+      FROM settlements_history s
+      JOIN members f ON s.from_member_id = f.id
+      JOIN members t ON s.to_member_id = t.id
+      WHERE s.group_id = ?
+      ORDER BY s.created_at DESC
+    `, [groupId]);
+    res.json(history);
+  } catch (err) {
+    console.error('Error fetching settlements history:', err);
+    res.status(500).json({ error: 'Failed to retrieve settlements history.' });
+  }
+});
+
+// 8c. Delete a Settlement Payment (Undo settlement)
+app.delete('/api/settlements/:id', async (req, res) => {
+  const { id } = req.params;
+  const db = await getDb();
+  
+  try {
+    const settlement = await db.get('SELECT * FROM settlements_history WHERE id = ?', [id]);
+    if (!settlement) {
+      return res.status(404).json({ error: 'Settlement not found.' });
+    }
+
+    await db.run('BEGIN TRANSACTION');
+    
+    await db.run('DELETE FROM settlements_history WHERE id = ?', [id]);
+    
+    // Fetch names to create readable log
+    const debtor = await db.get('SELECT name FROM members WHERE id = ?', [settlement.from_member_id]);
+    const creditor = await db.get('SELECT name FROM members WHERE id = ?', [settlement.to_member_id]);
+    
+    const logId = crypto.randomUUID();
+    await db.run(
+      'INSERT INTO activity_logs (id, group_id, action_type, description) VALUES (?, ?, ?, ?)',
+      [logId, settlement.group_id, 'delete_payment', `Recorded payment of ₹${parseFloat(settlement.amount).toFixed(2)} from ${debtor ? debtor.name : 'Someone'} to ${creditor ? creditor.name : 'Someone'} was undone.`]
+    );
+
+    await db.run('COMMIT');
+    res.json({ message: 'Settlement payment deleted successfully.' });
+  } catch (err) {
+    await db.run('ROLLBACK');
+    console.error('Error deleting settlement:', err);
+    res.status(500).json({ error: 'Failed to delete settlement.' });
+  }
+});
+
 // 9. Get Group Activity Logs (Audit Trail)
 app.get('/api/groups/:id/activities', async (req, res) => {
   const groupId = req.params.id;

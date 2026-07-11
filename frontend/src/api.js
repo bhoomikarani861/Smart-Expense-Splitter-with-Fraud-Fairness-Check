@@ -94,6 +94,24 @@ export async function recordSettlement(groupId, settlementData) {
   return response.json();
 }
 
+export async function fetchSettlementsHistory(groupId) {
+  const response = await fetch(`${API_BASE_URL}/groups/${groupId}/settlements/history`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch settlements history');
+  }
+  return response.json();
+}
+
+export async function deleteSettlement(settlementId) {
+  const response = await fetch(`${API_BASE_URL}/settlements/${settlementId}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error('Failed to delete settlement');
+  }
+  return response.json();
+}
+
 export async function fetchActivities(groupId) {
   const response = await fetch(`${API_BASE_URL}/groups/${groupId}/activities`);
   if (!response.ok) {
