@@ -30,7 +30,9 @@ import {
   createRecurring,
   fetchRecurring,
   fetchSettlementsHistory,
-  deleteSettlement
+  deleteSettlement,
+  approveSettlement,
+  rejectSettlement
 } from './api';
 
 // Donut Chart Component
@@ -612,6 +614,25 @@ export default function App() {
     }
   };
 
+  const handleApproveSettlement = async (settlementId) => {
+    try {
+      await approveSettlement(settlementId);
+      loadGroupDetails(groupDetails.id);
+    } catch (err) {
+      alert('Failed to approve settlement: ' + err.message);
+    }
+  };
+
+  const handleRejectSettlement = async (settlementId) => {
+    if (!confirm('Are you sure you want to decline/reject this payment claim? This will raise a dispute alert.')) return;
+    try {
+      await rejectSettlement(settlementId);
+      loadGroupDetails(groupDetails.id);
+    } catch (err) {
+      alert('Failed to reject settlement: ' + err.message);
+    }
+  };
+
   return (
     <div>
       {/* Top Navbar */}
@@ -1039,44 +1060,102 @@ export default function App() {
                     )}
                   </div>
 
+                  {/* Pending Confirmations Queue */}
+                  {settlementHistory.filter(s => s.status === 'pending').length > 0 && (
+                    <div className="glass card" style={{ border: '1px solid rgba(245, 158, 11, 0.3)', background: 'rgba(245, 158, 11, 0.02)' }}>
+                      <h3 className="card-title" style={{ fontSize: '1.15rem', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--warning)' }}>
+                        <ShieldAlert size={18} />
+                        Pending Confirmations
+                      </h3>
+                      <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+                        These payment claims are waiting for the receiving member to confirm they actually got the money.
+                      </p>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                        {settlementHistory.filter(s => s.status === 'pending').map((sh) => (
+                          <div key={sh.id} style={{ display: 'flex', flexDirection: 'column', padding: '0.75rem 0.85rem', background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', gap: '0.5rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem' }}>
+                                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{sh.from_name}</span>
+                                  <ArrowRight size={10} style={{ color: 'var(--text-muted)' }} />
+                                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{sh.to_name}</span>
+                                </div>
+                                <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                                  Declared {sh.date}
+                                </div>
+                              </div>
+                              <span style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--warning)' }}>
+                                ₹{sh.amount.toFixed(2)}
+                              </span>
+                            </div>
+                            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem' }}>
+                              <button 
+                                className="btn btn-primary" 
+                                style={{ flex: 1, padding: '0.25rem 0.5rem', fontSize: '0.75rem', background: 'var(--success)', borderColor: 'var(--success)' }}
+                                onClick={() => handleApproveSettlement(sh.id)}
+                              >
+                                Confirm Received ({sh.to_name})
+                              </button>
+                              <button 
+                                className="btn btn-secondary" 
+                                style={{ flex: 1, padding: '0.25rem 0.5rem', fontSize: '0.75rem', borderColor: 'var(--danger)', color: 'var(--danger)' }}
+                                onClick={() => handleRejectSettlement(sh.id)}
+                              >
+                                Decline
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Recorded Settlement History (Past Payments) */}
                   <div className="glass card">
                     <h3 className="card-title" style={{ fontSize: '1.15rem', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                       <History size={16} color="var(--primary)" />
                       Past Settlements History
                     </h3>
-                    {settlementHistory.length === 0 ? (
+                    {settlementHistory.filter(s => s.status !== 'pending').length === 0 ? (
                       <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center', padding: '1.5rem 0' }}>
                         No past settlements recorded.
                       </p>
                     ) : (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-                        {settlementHistory.map((sh) => (
-                          <div key={sh.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.65rem 0.85rem', background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', fontSize: '0.85rem' }}>
-                            <div>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                                <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{sh.from_name}</span>
-                                <ArrowRight size={10} style={{ color: 'var(--text-muted)' }} />
-                                <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{sh.to_name}</span>
+                        {settlementHistory.filter(s => s.status !== 'pending').map((sh) => {
+                          const isDisputed = sh.status === 'disputed';
+                          return (
+                            <div key={sh.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.65rem 0.85rem', background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', fontSize: '0.85rem' }}>
+                              <div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{sh.from_name}</span>
+                                  <ArrowRight size={10} style={{ color: 'var(--text-muted)' }} />
+                                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{sh.to_name}</span>
+                                  {isDisputed && (
+                                    <span className="badge badge-danger" style={{ fontSize: '0.65rem', padding: '0.1rem 0.35rem', marginLeft: '0.25rem' }}>
+                                      Disputed
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                                  {sh.date}
+                                </div>
                               </div>
-                              <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
-                                {sh.date}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                                <span style={{ fontWeight: 700, color: isDisputed ? 'var(--danger)' : 'var(--success)' }}>
+                                  ₹{sh.amount.toFixed(2)}
+                                </span>
+                                <button 
+                                  className="btn btn-secondary btn-icon"
+                                  style={{ border: 'none', background: 'transparent', padding: 0, width: '24px', height: '24px', color: 'var(--danger)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                                  onClick={() => handleDeleteSettlementClick(sh.id)}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
                               </div>
                             </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                              <span style={{ fontWeight: 700, color: 'var(--success)' }}>
-                                ₹{sh.amount.toFixed(2)}
-                              </span>
-                              <button 
-                                className="btn btn-secondary btn-icon"
-                                style={{ border: 'none', background: 'transparent', padding: 0, width: '24px', height: '24px', color: 'var(--danger)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                                onClick={() => handleDeleteSettlementClick(sh.id)}
-                              >
-                                <Trash2 size={12} />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>

@@ -144,3 +144,23 @@ export async function fetchRecurring(groupId) {
   return response.json();
 }
 
+export async function approveSettlement(settlementId) {
+  const response = await fetch(`${API_BASE_URL}/settlements/${settlementId}/approve`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    throw new Error('Failed to approve settlement');
+  }
+  return response.json();
+}
+
+export async function rejectSettlement(settlementId) {
+  const response = await fetch(`${API_BASE_URL}/settlements/${settlementId}/reject`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    throw new Error('Failed to reject settlement');
+  }
+  return response.json();
+}
+

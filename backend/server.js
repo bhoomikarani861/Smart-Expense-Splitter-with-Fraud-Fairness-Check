@@ -259,8 +259,8 @@ app.get('/api/groups/:id/settlements', async (req, res) => {
       return m;
     });
 
-    // Deduct/Add recorded settlements
-    const settlementsHistory = await db.all('SELECT * FROM settlements_history WHERE group_id = ?', [groupId]);
+    // Deduct/Add recorded settlements (only count approved settlements)
+    const settlementsHistory = await db.all("SELECT * FROM settlements_history WHERE group_id = ? AND status = 'approved'", [groupId]);
     settlementsHistory.forEach(s => {
       const debtor = balances.find(b => b.memberId === s.from_member_id);
       const creditor = balances.find(b => b.memberId === s.to_member_id);
@@ -302,8 +302,16 @@ app.get('/api/groups/:id/insights', async (req, res) => {
 
     const recurringTemplates = await db.all('SELECT * FROM recurring_templates WHERE group_id = ?', [groupId]);
 
-    // Run alerts check passing recurring templates
-    const alerts = runFairnessCheck(expenses, members, splits, recurringTemplates);
+    const settlementsHistory = await db.all(`
+      SELECT s.*, f.name AS from_name, t.name AS to_name
+      FROM settlements_history s
+      JOIN members f ON s.from_member_id = f.id
+      JOIN members t ON s.to_member_id = t.id
+      WHERE s.group_id = ?
+    `, [groupId]);
+
+    // Run alerts check passing recurring templates and settlements history
+    const alerts = runFairnessCheck(expenses, members, splits, recurringTemplates, settlementsHistory);
 
     // Calculate Category Distribution for charts
     const categoryTotals = {};
@@ -342,8 +350,8 @@ app.post('/api/groups/:id/settlements', async (req, res) => {
 
     const settlementId = crypto.randomUUID();
     await db.run(
-      `INSERT INTO settlements_history (id, group_id, from_member_id, to_member_id, amount, date)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO settlements_history (id, group_id, from_member_id, to_member_id, amount, date, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
       [settlementId, groupId, fromMemberId, toMemberId, amount, date]
     );
 
@@ -354,7 +362,7 @@ app.post('/api/groups/:id/settlements', async (req, res) => {
     const logId = crypto.randomUUID();
     await db.run(
       'INSERT INTO activity_logs (id, group_id, action_type, description) VALUES (?, ?, ?, ?)',
-      [logId, groupId, 'record_payment', `${debtor ? debtor.name : 'Someone'} paid ₹${parseFloat(amount).toFixed(2)} to ${creditor ? creditor.name : 'someone'}.`]
+      [logId, groupId, 'record_payment', `${debtor ? debtor.name : 'Someone'} declared a payment of ₹${parseFloat(amount).toFixed(2)} to ${creditor ? creditor.name : 'someone'} (pending confirmation).`]
     );
 
     await db.run('COMMIT');
@@ -363,6 +371,82 @@ app.post('/api/groups/:id/settlements', async (req, res) => {
     await db.run('ROLLBACK');
     console.error('Error recording settlement:', err);
     res.status(500).json({ error: 'Failed to record settlement.' });
+  }
+});
+
+// 8d. Confirm/Approve a Settlement Payment
+app.post('/api/settlements/:id/approve', async (req, res) => {
+  const { id } = req.params;
+  const db = await getDb();
+  
+  try {
+    const settlement = await db.get('SELECT * FROM settlements_history WHERE id = ?', [id]);
+    if (!settlement) {
+      return res.status(404).json({ error: 'Settlement not found.' });
+    }
+
+    await db.run('BEGIN TRANSACTION');
+    
+    // Update status to approved
+    await db.run(
+      "UPDATE settlements_history SET status = 'approved' WHERE id = ?",
+      [id]
+    );
+    
+    // Fetch names to create readable log
+    const debtor = await db.get('SELECT name FROM members WHERE id = ?', [settlement.from_member_id]);
+    const creditor = await db.get('SELECT name FROM members WHERE id = ?', [settlement.to_member_id]);
+    
+    const logId = crypto.randomUUID();
+    await db.run(
+      'INSERT INTO activity_logs (id, group_id, action_type, description) VALUES (?, ?, ?, ?)',
+      [logId, settlement.group_id, 'approve_payment', `${creditor ? creditor.name : 'Someone'} confirmed receiving payment of ₹${parseFloat(settlement.amount).toFixed(2)} from ${debtor ? debtor.name : 'Someone'}.`]
+    );
+
+    await db.run('COMMIT');
+    res.json({ message: 'Settlement payment approved successfully.' });
+  } catch (err) {
+    await db.run('ROLLBACK');
+    console.error('Error approving settlement:', err);
+    res.status(500).json({ error: 'Failed to approve settlement.' });
+  }
+});
+
+// 8e. Decline/Reject a Settlement Payment (Dispute)
+app.post('/api/settlements/:id/reject', async (req, res) => {
+  const { id } = req.params;
+  const db = await getDb();
+  
+  try {
+    const settlement = await db.get('SELECT * FROM settlements_history WHERE id = ?', [id]);
+    if (!settlement) {
+      return res.status(404).json({ error: 'Settlement not found.' });
+    }
+
+    await db.run('BEGIN TRANSACTION');
+    
+    // Update status to disputed
+    await db.run(
+      "UPDATE settlements_history SET status = 'disputed' WHERE id = ?",
+      [id]
+    );
+    
+    // Fetch names to create readable log
+    const debtor = await db.get('SELECT name FROM members WHERE id = ?', [settlement.from_member_id]);
+    const creditor = await db.get('SELECT name FROM members WHERE id = ?', [settlement.to_member_id]);
+    
+    const logId = crypto.randomUUID();
+    await db.run(
+      'INSERT INTO activity_logs (id, group_id, action_type, description) VALUES (?, ?, ?, ?)',
+      [logId, settlement.group_id, 'reject_payment', `${creditor ? creditor.name : 'Someone'} rejected/disputed the payment claim of ₹${parseFloat(settlement.amount).toFixed(2)} from ${debtor ? debtor.name : 'Someone'}.`]
+    );
+
+    await db.run('COMMIT');
+    res.json({ message: 'Settlement payment rejected/disputed successfully.' });
+  } catch (err) {
+    await db.run('ROLLBACK');
+    console.error('Error rejecting settlement:', err);
+    res.status(500).json({ error: 'Failed to reject settlement.' });
   }
 });
 

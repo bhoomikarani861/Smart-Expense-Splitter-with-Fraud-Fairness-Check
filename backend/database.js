@@ -93,6 +93,13 @@ export async function initDb() {
     );
   `);
   
+  // Add status column to settlements_history for anti-fraud confirmation workflow
+  try {
+    await db.exec(`ALTER TABLE settlements_history ADD COLUMN status TEXT NOT NULL DEFAULT 'pending';`);
+  } catch (err) {
+    // Safely ignore if column already exists
+  }
+
   return db;
 }
 

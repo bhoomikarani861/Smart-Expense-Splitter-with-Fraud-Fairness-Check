@@ -219,6 +219,62 @@ try {
   failCount++;
 }
 
+// ----------------------------------------------------
+// TEST 7: Pending & Disputed Settlements do not adjust balances (Anti-Fraud)
+// Scenario: Alice starts +80, Bob -80.
+// A PENDING settlement of $30 is recorded: Bob pays Alice $30.
+// A DISPUTED settlement of $20 is recorded: Bob pays Alice $20.
+// Expected adjusted balances: Alice +80, Bob -80 (no change, because status is not 'approved').
+// ----------------------------------------------------
+try {
+  const balances = [
+    { memberId: 'm1', name: 'Alice', balance: 80 },
+    { memberId: 'm2', name: 'Bob', balance: -80 }
+  ];
+
+  const settlementsHistory = [
+    { from_member_id: 'm2', to_member_id: 'm1', amount: 30, status: 'pending' },
+    { from_member_id: 'm2', to_member_id: 'm1', amount: 20, status: 'disputed' }
+  ];
+
+  // Only apply approved ones
+  settlementsHistory.forEach(s => {
+    if (s.status === 'approved') {
+      const debtor = balances.find(b => b.memberId === s.from_member_id);
+      const creditor = balances.find(b => b.memberId === s.to_member_id);
+      if (debtor) debtor.balance += s.amount;
+      if (creditor) creditor.balance -= s.amount;
+    }
+  });
+
+  assert(balances.find(b => b.memberId === 'm1').balance === 80, 'Alice balance should remain +80 for pending/disputed payments');
+  assert(balances.find(b => b.memberId === 'm2').balance === -80, 'Bob balance should remain -80 for pending/disputed payments');
+} catch (e) {
+  console.error(e);
+  failCount++;
+}
+
+// ----------------------------------------------------
+// TEST 8: Payment Dispute Warning inside Fairness Check
+// ----------------------------------------------------
+try {
+  const mockExpenses = [{ id: 'e1', description: 'N/A', amount: 10, paid_by_member_id: 'm1', date: new Date().toISOString() }];
+  const mockMembers = [{ id: 'm1', name: 'Alice' }, { id: 'm2', name: 'Bob' }];
+  const mockSplits = [{ member_id: 'm1', amount: 5, expense_id: 'e1' }, { member_id: 'm2', amount: 5, expense_id: 'e1' }];
+  const mockSettlementsHistory = [
+    { id: 's1', from_member_id: 'm2', to_member_id: 'm1', amount: 50, status: 'disputed', from_name: 'Bob', to_name: 'Alice' }
+  ];
+
+  const alerts = runFairnessCheck(mockExpenses, mockMembers, mockSplits, [], mockSettlementsHistory);
+  const disputeAlert = alerts.find(a => a.type === 'payment_dispute');
+  
+  assert(!!disputeAlert, 'Should detect payment dispute in fairness check');
+  assert(disputeAlert && disputeAlert.severity === 'danger', 'Dispute alert should have danger severity');
+} catch (e) {
+  console.error(e);
+  failCount++;
+}
+
 console.log('\n========================================');
 console.log(`TEST SUMMARY: ${passCount} PASSED, ${failCount} FAILED`);
 console.log('========================================');

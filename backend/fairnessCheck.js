@@ -7,8 +7,9 @@
  * 3. Zero Contribution: Flags if a member has paid for $0 of group expenses but has accumulated debt.
  * 4. Outlier Expense Check: Flags expenses that are statistically much larger (mean + 1.2 * standard deviation) than average.
  * 5. Recurring Overcharge: Flags recurring expenses whose actual bill is > 10% higher than the template baseline amount.
+ * 6. Payment Dispute Check: Flags settlement claims marked as disputed by the recipient.
  */
-export function runFairnessCheck(expenses, members, splits, recurringTemplates = []) {
+export function runFairnessCheck(expenses, members, splits, recurringTemplates = [], settlementsHistory = []) {
   const alerts = [];
 
   if (!expenses || expenses.length === 0) {
@@ -158,6 +159,21 @@ export function runFairnessCheck(expenses, members, splits, recurringTemplates =
           }
         }
       });
+    });
+  }
+
+  // 6. Payment Dispute Check (Anti-Fraud)
+  if (settlementsHistory && settlementsHistory.length > 0) {
+    settlementsHistory.forEach(s => {
+      if (s.status === 'disputed') {
+        alerts.push({
+          type: 'payment_dispute',
+          severity: 'danger',
+          title: 'Payment Dispute Detected',
+          message: `The payment claim of ₹${parseFloat(s.amount).toFixed(2)} from ${s.from_name || 'Sender'} to ${s.to_name || 'Receiver'} was disputed by the receiver. Please settle up offline.`,
+          settlementId: s.id
+        });
+      }
     });
   }
 
