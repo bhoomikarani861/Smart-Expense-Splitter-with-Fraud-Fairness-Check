@@ -1300,41 +1300,62 @@ export default function App() {
                         These payment claims are waiting for the receiving member to confirm they actually got the money.
                       </p>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-                        {settlementHistory.filter(s => s.status === 'pending').map((sh) => (
-                          <div key={sh.id} style={{ display: 'flex', flexDirection: 'column', padding: '0.75rem 0.85rem', background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', gap: '0.5rem' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem' }}>
-                                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{sh.from_name}</span>
-                                  <ArrowRight size={10} style={{ color: 'var(--text-muted)' }} />
-                                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{sh.to_name}</span>
+                        {settlementHistory.filter(s => s.status === 'pending').map((sh) => {
+                          const loggedInMember = groupDetails?.members?.find(m => m.user_id === currentUser?.id);
+                          const isRecipient = loggedInMember && loggedInMember.id === sh.to_member_id;
+                          return (
+                            <div key={sh.id} style={{ display: 'flex', flexDirection: 'column', padding: '0.75rem 0.85rem', background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', gap: '0.5rem' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem' }}>
+                                    <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{sh.from_name}</span>
+                                    <ArrowRight size={10} style={{ color: 'var(--text-muted)' }} />
+                                    <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{sh.to_name}</span>
+                                  </div>
+                                  <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                                    Declared {sh.date}
+                                  </div>
                                 </div>
-                                <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
-                                  Declared {sh.date}
-                                </div>
+                                <span style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--warning)' }}>
+                                  ₹{sh.amount.toFixed(2)}
+                                </span>
                               </div>
-                              <span style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--warning)' }}>
-                                ₹{sh.amount.toFixed(2)}
-                              </span>
+                              {isRecipient ? (
+                                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem' }}>
+                                  <button 
+                                    className="btn btn-primary" 
+                                    style={{ flex: 1, padding: '0.25rem 0.5rem', fontSize: '0.75rem', background: 'var(--success)', borderColor: 'var(--success)' }}
+                                    onClick={() => handleApproveSettlement(sh.id)}
+                                  >
+                                    Confirm Received
+                                  </button>
+                                  <button 
+                                    className="btn btn-secondary" 
+                                    style={{ flex: 1, padding: '0.25rem 0.5rem', fontSize: '0.75rem', borderColor: 'var(--danger)', color: 'var(--danger)' }}
+                                    onClick={() => handleRejectSettlement(sh.id)}
+                                  >
+                                    Decline
+                                  </button>
+                                </div>
+                              ) : (
+                                <div style={{ 
+                                  display: 'flex', 
+                                  alignItems: 'center', 
+                                  gap: '0.35rem', 
+                                  fontSize: '0.75rem', 
+                                  color: 'var(--warning)', 
+                                  padding: '0.35rem 0.5rem', 
+                                  background: 'rgba(245, 158, 11, 0.08)', 
+                                  borderRadius: 'var(--radius-sm)',
+                                  marginTop: '0.25rem' 
+                                }}>
+                                  <Info size={12} style={{ flexShrink: 0 }} />
+                                  <span>Waiting for {sh.to_name} to confirm receiving this payment</span>
+                                </div>
+                              )}
                             </div>
-                            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem' }}>
-                              <button 
-                                className="btn btn-primary" 
-                                style={{ flex: 1, padding: '0.25rem 0.5rem', fontSize: '0.75rem', background: 'var(--success)', borderColor: 'var(--success)' }}
-                                onClick={() => handleApproveSettlement(sh.id)}
-                              >
-                                Confirm Received ({sh.to_name})
-                              </button>
-                              <button 
-                                className="btn btn-secondary" 
-                                style={{ flex: 1, padding: '0.25rem 0.5rem', fontSize: '0.75rem', borderColor: 'var(--danger)', color: 'var(--danger)' }}
-                                onClick={() => handleRejectSettlement(sh.id)}
-                              >
-                                Decline
-                              </button>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}

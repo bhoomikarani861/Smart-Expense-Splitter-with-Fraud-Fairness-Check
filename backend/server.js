@@ -596,6 +596,12 @@ app.post('/api/settlements/:id/approve', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Settlement not found.' });
     }
 
+    // Verify only the recipient of the payment can approve it
+    const recipientMember = await db.get('SELECT * FROM members WHERE id = ?', [settlement.to_member_id]);
+    if (!recipientMember || recipientMember.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied. Only the recipient of the payment can confirm/approve this payment.' });
+    }
+
     await db.run('BEGIN TRANSACTION');
     
     // Update status to approved
@@ -632,6 +638,12 @@ app.post('/api/settlements/:id/reject', requireAuth, async (req, res) => {
     const settlement = await db.get('SELECT * FROM settlements_history WHERE id = ?', [id]);
     if (!settlement) {
       return res.status(404).json({ error: 'Settlement not found.' });
+    }
+
+    // Verify only the recipient of the payment can reject it
+    const recipientMember = await db.get('SELECT * FROM members WHERE id = ?', [settlement.to_member_id]);
+    if (!recipientMember || recipientMember.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied. Only the recipient of the payment can decline/reject this payment.' });
     }
 
     await db.run('BEGIN TRANSACTION');
