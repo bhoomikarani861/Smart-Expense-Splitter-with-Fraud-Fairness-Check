@@ -23,10 +23,176 @@ initDb()
     process.exit(1);
   });
 
+// --- AUTHENTICATION HELPERS & MIDDLEWARE ---
+
+// Secure password hashing using pbkdf2Sync (native node crypto)
+function hashPassword(password) {
+  const salt = 'fair-split-salt-12345'; // simple static salt for demo/sqlite mapping
+  return crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+}
+
+// Middleware to authenticate token from Bearer Authorization header
+async function requireAuth(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
+  
+  if (!token) {
+    return res.status(401).json({ error: 'Authentication required.' });
+  }
+  
+  const db = await getDb();
+  try {
+    const session = await db.get(`
+      SELECT s.token, u.id, u.name, u.email 
+      FROM sessions s
+      JOIN users u ON s.user_id = u.id
+      WHERE s.token = ?
+    `, [token]);
+    
+    if (!session) {
+      return res.status(401).json({ error: 'Session expired or invalid.' });
+    }
+    
+    req.user = {
+      id: session.id,
+      name: session.name,
+      email: session.email
+    };
+    next();
+  } catch (err) {
+    console.error('Auth middleware error:', err);
+    return res.status(500).json({ error: 'Authentication failed.' });
+  }
+}
+
+// --- AUTHENTICATION API ROUTES ---
+
+// Register
+app.post('/api/auth/register', async (req, res) => {
+  const { name, email, password } = req.body;
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: 'Name, email, and password are required.' });
+  }
+  
+  const db = await getDb();
+  try {
+    const existing = await db.get('SELECT id FROM users WHERE email = ?', [email.toLowerCase().trim()]);
+    if (existing) {
+      return res.status(400).json({ error: 'Email already registered.' });
+    }
+    
+    const userId = crypto.randomUUID();
+    const pwdHash = hashPassword(password);
+    
+    await db.run(
+      'INSERT INTO users (id, name, email, password) VALUES (?, ?, ?, ?)',
+      [userId, name.trim(), email.toLowerCase().trim(), pwdHash]
+    );
+    
+    // Create session token
+    const token = crypto.randomBytes(32).toString('hex');
+    await db.run(
+      'INSERT INTO sessions (token, user_id) VALUES (?, ?)',
+      [token, userId]
+    );
+
+    // Link any existing group member placeholders with this email
+    await db.run(
+      'UPDATE members SET user_id = ?, name = ? WHERE email = ?',
+      [userId, name.trim(), email.toLowerCase().trim()]
+    );
+    
+    res.status(201).json({
+      token,
+      user: { id: userId, name: name.trim(), email: email.toLowerCase().trim() }
+    });
+  } catch (err) {
+    console.error('Register error:', err);
+    res.status(500).json({ error: 'Failed to register.' });
+  }
+});
+
+// Login
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required.' });
+  }
+  
+  const db = await getDb();
+  try {
+    const user = await db.get('SELECT * FROM users WHERE email = ?', [email.toLowerCase().trim()]);
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid email or password.' });
+    }
+    
+    const pwdHash = hashPassword(password);
+    if (user.password !== pwdHash) {
+      return res.status(400).json({ error: 'Invalid email or password.' });
+    }
+    
+    // Create session token
+    const token = crypto.randomBytes(32).toString('hex');
+    await db.run(
+      'INSERT INTO sessions (token, user_id) VALUES (?, ?)',
+      [token, user.id]
+    );
+    
+    res.json({
+      token,
+      user: { id: user.id, name: user.name, email: user.email }
+    });
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({ error: 'Failed to login.' });
+  }
+});
+
+// Logout
+app.post('/api/auth/logout', async (req, res) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.sendStatus(204);
+  
+  const db = await getDb();
+  try {
+    await db.run('DELETE FROM sessions WHERE token = ?', [token]);
+    res.json({ message: 'Logged out successfully.' });
+  } catch (err) {
+    console.error('Logout error:', err);
+    res.status(500).json({ error: 'Failed to logout.' });
+  }
+});
+
+// Get Current User Profile
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  res.json({ user: req.user });
+});
+
+// Search Users by Email or Name
+app.get('/api/users/search', requireAuth, async (req, res) => {
+  const { q } = req.query;
+  if (!q || q.trim().length < 2) {
+    return res.json([]);
+  }
+  
+  const db = await getDb();
+  try {
+    const users = await db.all(
+      'SELECT id, name, email FROM users WHERE email LIKE ? OR name LIKE ? LIMIT 5',
+      [`%${q.trim()}%`, `%${q.trim()}%`]
+    );
+    res.json(users);
+  } catch (err) {
+    console.error('Search users error:', err);
+    res.status(500).json({ error: 'Failed to search users.' });
+  }
+});
+
 // --- API ROUTES ---
 
 // 1. Create a group with members
-app.post('/api/groups', async (req, res) => {
+app.post('/api/groups', requireAuth, async (req, res) => {
   const { name, description, members } = req.body;
   
   if (!name || !members || !Array.isArray(members) || members.length < 2) {
@@ -40,22 +206,59 @@ app.post('/api/groups', async (req, res) => {
     
     const groupId = crypto.randomUUID();
     await db.run(
-      'INSERT INTO groups (id, name, description) VALUES (?, ?, ?)',
-      [groupId, name, description || '']
+      'INSERT INTO groups (id, name, description, created_by_user_id) VALUES (?, ?, ?, ?)',
+      [groupId, name, description || '', req.user.id]
     );
 
-    for (const memberName of members) {
-      if (!memberName.trim()) continue;
+    // Auto-create creator as first group member
+    const creatorMemberId = crypto.randomUUID();
+    await db.run(
+      'INSERT INTO members (id, group_id, name, user_id, email) VALUES (?, ?, ?, ?, ?)',
+      [creatorMemberId, groupId, req.user.name, req.user.id, req.user.email]
+    );
+
+    for (const memberObj of members) {
+      let mName = '';
+      let mEmail = '';
+      
+      if (typeof memberObj === 'string') {
+        const val = memberObj.trim();
+        if (val.includes('@')) {
+          mEmail = val.toLowerCase();
+          mName = val.split('@')[0];
+        } else {
+          mName = val;
+        }
+      } else if (memberObj && typeof memberObj === 'object') {
+        mName = memberObj.name?.trim() || '';
+        mEmail = memberObj.email?.trim() || '';
+      }
+
+      if (!mName) continue;
+      
+      // Prevent adding creator again
+      if (mName.toLowerCase() === req.user.name.toLowerCase() || (mEmail && mEmail.toLowerCase() === req.user.email.toLowerCase())) {
+        continue;
+      }
+
+      let associatedUserId = null;
+      if (mEmail) {
+        const linkedUser = await db.get('SELECT id, name FROM users WHERE email = ?', [mEmail.toLowerCase()]);
+        if (linkedUser) {
+          associatedUserId = linkedUser.id;
+          mName = linkedUser.name;
+        }
+      }
+
       const memberId = crypto.randomUUID();
       await db.run(
-        'INSERT INTO members (id, group_id, name) VALUES (?, ?, ?)',
-        [memberId, groupId, memberName.trim()]
+        'INSERT INTO members (id, group_id, name, user_id, email) VALUES (?, ?, ?, ?, ?)',
+        [memberId, groupId, mName, associatedUserId, mEmail || null]
       );
     }
 
     await db.run('COMMIT');
     
-    // Fetch the newly created group details to return
     const group = await db.get('SELECT * FROM groups WHERE id = ?', [groupId]);
     const groupMembers = await db.all('SELECT * FROM members WHERE group_id = ?', [groupId]);
     
@@ -67,8 +270,8 @@ app.post('/api/groups', async (req, res) => {
   }
 });
 
-// 2. Get list of all groups (with member count and total expenses)
-app.get('/api/groups', async (req, res) => {
+// 2. Get list of all groups (scoped to user)
+app.get('/api/groups', requireAuth, async (req, res) => {
   const db = await getDb();
   try {
     const groups = await db.all(`
@@ -76,8 +279,10 @@ app.get('/api/groups', async (req, res) => {
              (SELECT COUNT(*) FROM members m WHERE m.group_id = g.id) AS member_count,
              COALESCE((SELECT SUM(amount) FROM expenses e WHERE e.group_id = g.id), 0) AS total_expenses
       FROM groups g
+      JOIN members m ON m.group_id = g.id
+      WHERE m.user_id = ?
       ORDER BY g.created_at DESC
-    `);
+    `, [req.user.id]);
     res.json(groups);
   } catch (err) {
     console.error('Error fetching groups:', err);
@@ -86,11 +291,17 @@ app.get('/api/groups', async (req, res) => {
 });
 
 // 3. Get single group details (members, expenses, and splits)
-app.get('/api/groups/:id', async (req, res) => {
+app.get('/api/groups/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
   const db = await getDb();
   
   try {
+    // Check membership
+    const membership = await db.get('SELECT id FROM members WHERE group_id = ? AND user_id = ?', [id, req.user.id]);
+    if (!membership) {
+      return res.status(403).json({ error: 'Access denied. You are not a member of this group.' });
+    }
+
     const group = await db.get('SELECT * FROM groups WHERE id = ?', [id]);
     if (!group) {
       return res.status(404).json({ error: 'Group not found.' });
@@ -126,7 +337,7 @@ app.get('/api/groups/:id', async (req, res) => {
 });
 
 // 4. Add an expense to a group
-app.post('/api/groups/:id/expenses', async (req, res) => {
+app.post('/api/groups/:id/expenses', requireAuth, async (req, res) => {
   const groupId = req.params.id;
   const { paidByMemberId, amount, description, category, splitType, date, splits } = req.body;
 
@@ -180,7 +391,7 @@ app.post('/api/groups/:id/expenses', async (req, res) => {
 });
 
 // 5. Delete an expense (with Activity Logging)
-app.delete('/api/expenses/:id', async (req, res) => {
+app.delete('/api/expenses/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
   const db = await getDb();
   
@@ -211,7 +422,7 @@ app.delete('/api/expenses/:id', async (req, res) => {
 });
 
 // 6. Calculate balances and debt simplification (settlement, adjusting for history)
-app.get('/api/groups/:id/settlements', async (req, res) => {
+app.get('/api/groups/:id/settlements', requireAuth, async (req, res) => {
   const groupId = req.params.id;
   const db = await getDb();
   
@@ -286,7 +497,7 @@ app.get('/api/groups/:id/settlements', async (req, res) => {
 });
 
 // 7. Get fairness check insights and analytics for group (with recurrence checks)
-app.get('/api/groups/:id/insights', async (req, res) => {
+app.get('/api/groups/:id/insights', requireAuth, async (req, res) => {
   const groupId = req.params.id;
   const db = await getDb();
   
@@ -335,7 +546,7 @@ app.get('/api/groups/:id/insights', async (req, res) => {
 });
 
 // 8. Record a Settlement Payment (Write-back payment)
-app.post('/api/groups/:id/settlements', async (req, res) => {
+app.post('/api/groups/:id/settlements', requireAuth, async (req, res) => {
   const groupId = req.params.id;
   const { fromMemberId, toMemberId, amount, date } = req.body;
 
@@ -375,7 +586,7 @@ app.post('/api/groups/:id/settlements', async (req, res) => {
 });
 
 // 8d. Confirm/Approve a Settlement Payment
-app.post('/api/settlements/:id/approve', async (req, res) => {
+app.post('/api/settlements/:id/approve', requireAuth, async (req, res) => {
   const { id } = req.params;
   const db = await getDb();
   
@@ -413,7 +624,7 @@ app.post('/api/settlements/:id/approve', async (req, res) => {
 });
 
 // 8e. Decline/Reject a Settlement Payment (Dispute)
-app.post('/api/settlements/:id/reject', async (req, res) => {
+app.post('/api/settlements/:id/reject', requireAuth, async (req, res) => {
   const { id } = req.params;
   const db = await getDb();
   
@@ -451,7 +662,7 @@ app.post('/api/settlements/:id/reject', async (req, res) => {
 });
 
 // 8b. Get Recorded Settlements History
-app.get('/api/groups/:id/settlements/history', async (req, res) => {
+app.get('/api/groups/:id/settlements/history', requireAuth, async (req, res) => {
   const groupId = req.params.id;
   const db = await getDb();
   
@@ -472,7 +683,7 @@ app.get('/api/groups/:id/settlements/history', async (req, res) => {
 });
 
 // 8c. Delete a Settlement Payment (Undo settlement)
-app.delete('/api/settlements/:id', async (req, res) => {
+app.delete('/api/settlements/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
   const db = await getDb();
   
@@ -506,7 +717,7 @@ app.delete('/api/settlements/:id', async (req, res) => {
 });
 
 // 9. Get Group Activity Logs (Audit Trail)
-app.get('/api/groups/:id/activities', async (req, res) => {
+app.get('/api/groups/:id/activities', requireAuth, async (req, res) => {
   const groupId = req.params.id;
   const db = await getDb();
   
@@ -523,7 +734,7 @@ app.get('/api/groups/:id/activities', async (req, res) => {
 });
 
 // 10. Create a Recurring Bill Template
-app.post('/api/groups/:id/recurring', async (req, res) => {
+app.post('/api/groups/:id/recurring', requireAuth, async (req, res) => {
   const groupId = req.params.id;
   const { paidByMemberId, amount, description, category, frequency, nextDueDate } = req.body;
 
@@ -561,7 +772,7 @@ app.post('/api/groups/:id/recurring', async (req, res) => {
 });
 
 // 11. List Recurring Bill Templates
-app.get('/api/groups/:id/recurring', async (req, res) => {
+app.get('/api/groups/:id/recurring', requireAuth, async (req, res) => {
   const groupId = req.params.id;
   const db = await getDb();
   

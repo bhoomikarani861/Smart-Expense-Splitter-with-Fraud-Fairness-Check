@@ -32,7 +32,11 @@ import {
   fetchSettlementsHistory,
   deleteSettlement,
   approveSettlement,
-  rejectSettlement
+  rejectSettlement,
+  login,
+  register,
+  logout,
+  fetchCurrentUser
 } from './api';
 
 // Donut Chart Component
@@ -234,6 +238,14 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  // Authentication State
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authView, setAuthView] = useState('login'); // 'login' or 'register'
+  const [authName, setAuthName] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+
   // Group Details States
   const [groupDetails, setGroupDetails] = useState(null);
   const [settlements, setSettlements] = useState({ balances: [], settlements: [] });
@@ -280,9 +292,31 @@ export default function App() {
     return d.toISOString().split('T')[0];
   });
 
-  // Initial Load: Fetch Groups
+  // Initial Load: Verify Token and Load Profile
   useEffect(() => {
-    loadGroups();
+    const token = localStorage.getItem('token');
+    if (token) {
+      setLoading(true);
+      fetchCurrentUser()
+        .then(data => {
+          setCurrentUser(data.user);
+          return fetchGroups();
+        })
+        .then(groupsData => {
+          if (groupsData) {
+            setGroups(groupsData);
+          }
+          setError(null);
+        })
+        .catch(err => {
+          console.error('Session verification failed:', err);
+          localStorage.removeItem('token');
+          setCurrentUser(null);
+        })
+        .finally(() => {
+          setLoading(false);
+        });
+    }
   }, []);
 
   const loadGroups = async () => {
@@ -292,7 +326,12 @@ export default function App() {
       setGroups(data);
       setError(null);
     } catch (err) {
-      setError('Could not connect to the backend server. Please make sure the backend is running.');
+      if (err.message.includes('401') || err.message.includes('expired') || err.message.includes('Authentication')) {
+        setCurrentUser(null);
+        localStorage.removeItem('token');
+      } else {
+        setError('Could not connect to the backend server. Please make sure the backend is running.');
+      }
     } finally {
       setLoading(false);
     }
@@ -325,6 +364,61 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Authentication Action Handlers
+  const handleLoginSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setAuthError('');
+    try {
+      const data = await login(authEmail, authPassword);
+      localStorage.setItem('token', data.token);
+      setCurrentUser(data.user);
+      setAuthPassword('');
+      // Immediately load groups for the user
+      const groupsData = await fetchGroups();
+      setGroups(groupsData);
+      setError(null);
+    } catch (err) {
+      setAuthError(err.message || 'Login failed.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegisterSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setAuthError('');
+    try {
+      const data = await register(authName, authEmail, authPassword);
+      localStorage.setItem('token', data.token);
+      setCurrentUser(data.user);
+      setAuthName('');
+      setAuthPassword('');
+      const groupsData = await fetchGroups();
+      setGroups(groupsData);
+      setError(null);
+    } catch (err) {
+      setAuthError(err.message || 'Registration failed.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    setLoading(true);
+    try {
+      await logout();
+    } catch (err) {
+      console.error('Logout failed:', err);
+    }
+    setCurrentUser(null);
+    setGroups([]);
+    setGroupDetails(null);
+    setCurrentView({ name: 'dashboard' });
+    setLoading(false);
   };
 
   const handleGroupClick = (groupId) => {
@@ -633,6 +727,139 @@ export default function App() {
     }
   };
 
+  if (!currentUser) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-dark)' }}>
+        {/* Top Navbar for logged out users */}
+        <nav className="glass" style={{ borderBottom: '1px solid var(--border-color)', padding: '1rem 2rem' }}>
+          <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <div style={{ background: 'linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%)', width: '36px', height: '36px', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Sparkles size={18} color="#fff" />
+              </div>
+              <span style={{ fontSize: '1.25rem', fontWeight: 800, background: 'linear-gradient(135deg, #fff 30%, #a5b4fc 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>FairSplit</span>
+            </div>
+          </div>
+        </nav>
+
+        {/* Auth Panel */}
+        <main className="container" style={{ flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2rem' }}>
+          <div className="glass card" style={{ width: '100%', maxWidth: '420px', padding: '2.5rem', borderRadius: 'var(--radius-lg)', boxShadow: '0 8px 32px 0 rgba(0,0,0,0.37)' }}>
+            
+            <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+              <h2 style={{ fontSize: '1.75rem', fontWeight: 800, marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                {authView === 'login' ? 'Welcome Back' : 'Get Started'}
+              </h2>
+              <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                {authView === 'login' ? 'Log in to split bills and verify fairness.' : 'Create an account to manage your group expenses.'}
+              </p>
+            </div>
+
+            {authError && (
+              <div className="glass alert-card danger" style={{ padding: '0.75rem 1rem', marginBottom: '1.5rem', borderRadius: 'var(--radius-sm)', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <ShieldAlert size={16} className="alert-icon" style={{ flexShrink: 0 }} />
+                <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>{authError}</div>
+              </div>
+            )}
+
+            {authView === 'login' ? (
+              <form onSubmit={handleLoginSubmit}>
+                <div className="form-group">
+                  <label className="form-label">Email Address</label>
+                  <input 
+                    type="email" 
+                    className="form-input" 
+                    placeholder="name@example.com" 
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    required 
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Password</label>
+                  <input 
+                    type="password" 
+                    className="form-input" 
+                    placeholder="••••••••" 
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    required 
+                  />
+                </div>
+                <button type="submit" className="btn btn-primary" style={{ width: '100%', padding: '0.75rem', marginTop: '1.5rem' }} disabled={loading}>
+                  {loading ? 'Logging in...' : 'Log In'}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleRegisterSubmit}>
+                <div className="form-group">
+                  <label className="form-label">Full Name</label>
+                  <input 
+                    type="text" 
+                    className="form-input" 
+                    placeholder="John Doe" 
+                    value={authName}
+                    onChange={(e) => setAuthName(e.target.value)}
+                    required 
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Email Address</label>
+                  <input 
+                    type="email" 
+                    className="form-input" 
+                    placeholder="name@example.com" 
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    required 
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Password</label>
+                  <input 
+                    type="password" 
+                    className="form-input" 
+                    placeholder="••••••••" 
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    required 
+                  />
+                </div>
+                <button type="submit" className="btn btn-primary" style={{ width: '100%', padding: '0.75rem', marginTop: '1.5rem' }} disabled={loading}>
+                  {loading ? 'Creating account...' : 'Sign Up'}
+                </button>
+              </form>
+            )}
+
+            <div style={{ textAlign: 'center', marginTop: '1.75rem', fontSize: '0.85rem' }}>
+              <span style={{ color: 'var(--text-secondary)' }}>
+                {authView === 'login' ? "Don't have an account? " : "Already have an account? "}
+              </span>
+              <button 
+                type="button" 
+                onClick={() => {
+                  setAuthView(authView === 'login' ? 'register' : 'login');
+                  setAuthError('');
+                }}
+                style={{ 
+                  background: 'none', 
+                  border: 'none', 
+                  color: 'var(--primary)', 
+                  fontWeight: 600, 
+                  cursor: 'pointer', 
+                  padding: 0 
+                }}
+              >
+                {authView === 'login' ? 'Sign Up' : 'Log In'}
+              </button>
+            </div>
+
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div>
       {/* Top Navbar */}
@@ -645,14 +872,16 @@ export default function App() {
             <span style={{ fontSize: '1.25rem', fontWeight: 800, background: 'linear-gradient(135deg, #fff 30%, #a5b4fc 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>FairSplit</span>
           </div>
           <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginRight: '0.5rem' }}>
+              Hello, <strong style={{ color: 'var(--text-primary)' }}>{currentUser.name}</strong>
+            </span>
             <button className="btn btn-secondary" style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }} onClick={() => currentView.name === 'group-details' ? loadGroupDetails(currentView.groupId) : loadGroups()}>
               <RefreshCw size={12} />
               Sync
             </button>
-            <span className="badge badge-info" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-              <ShieldAlert size={12} />
-              Fairness Engine Active
-            </span>
+            <button className="btn btn-secondary" style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', color: 'var(--danger)', borderColor: 'rgba(244,63,94,0.1)' }} onClick={handleLogout}>
+              Logout
+            </button>
           </div>
         </div>
       </nav>

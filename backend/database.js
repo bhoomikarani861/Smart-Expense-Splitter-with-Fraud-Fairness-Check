@@ -19,6 +19,21 @@ export async function initDb() {
   
   // Create tables
   await db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS groups (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -30,6 +45,8 @@ export async function initDb() {
       id TEXT PRIMARY KEY,
       group_id TEXT NOT NULL,
       name TEXT NOT NULL,
+      user_id TEXT,
+      email TEXT,
       FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
     );
     
@@ -96,6 +113,25 @@ export async function initDb() {
   // Add status column to settlements_history for anti-fraud confirmation workflow
   try {
     await db.exec(`ALTER TABLE settlements_history ADD COLUMN status TEXT NOT NULL DEFAULT 'pending';`);
+  } catch (err) {
+    // Safely ignore if column already exists
+  }
+
+  // Database Schema migrations for User Authentication support
+  try {
+    await db.exec(`ALTER TABLE groups ADD COLUMN created_by_user_id TEXT;`);
+  } catch (err) {
+    // Safely ignore if column already exists
+  }
+
+  try {
+    await db.exec(`ALTER TABLE members ADD COLUMN user_id TEXT;`);
+  } catch (err) {
+    // Safely ignore if column already exists
+  }
+
+  try {
+    await db.exec(`ALTER TABLE members ADD COLUMN email TEXT;`);
   } catch (err) {
     // Safely ignore if column already exists
   }
